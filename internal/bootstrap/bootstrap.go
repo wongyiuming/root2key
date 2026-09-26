@@ -82,7 +82,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		HostKeyFingerprint: r.fingerprint,
 		PrivateKey:         r.privatePEM,
 		PublicKey:          strings.TrimSpace(r.publicKey),
-		SSHConfig: fmt.Sprintf("Host root2key-%s\n    HostName %s\n    User root\n    Port %d\n    IdentityFile ~/.ssh/root2key_%s\n    IdentitiesOnly yes\n", safeAlias(req.Host), req.Host, r.newPort, safeAlias(req.Host)),
+		SSHConfig:          fmt.Sprintf("Host root2key-%s\n    HostName %s\n    User root\n    Port %d\n    IdentityFile ~/.ssh/root2key_%s\n    IdentitiesOnly yes\n", safeAlias(req.Host), req.Host, r.newPort, safeAlias(req.Host)),
 		Steps:              r.steps,
 	}, nil
 }
@@ -144,25 +144,30 @@ func (r *runner) run(ctx context.Context) (retErr error) {
 	}
 	r.step("Generated a new Ed25519 key pair in memory")
 
-	if err := r.installPublicKey(); err != nil {
-		return err
-	}
-	r.step("Installed the new public key for root")
-
 	r.newPort, err = r.choosePort()
 	if err != nil {
 		return err
 	}
 	r.step(fmt.Sprintf("Selected high SSH port %d", r.newPort))
 
+	if err := r.backupSSH(); err != nil {
+		return err
+	}
+	rollbackNeeded = true
+	r.step("Backed up the SSH configuration before making changes")
+
+	if err := r.installPublicKey(); err != nil {
+		return err
+	}
+	r.step("Installed the new public key for root")
+
 	if err := r.prepareNetwork(); err != nil {
 		return err
 	}
 
-	if err := r.backupAndArmRollback(); err != nil {
+	if err := r.armRollback(); err != nil {
 		return err
 	}
-	rollbackNeeded = true
 	r.step(fmt.Sprintf("Armed a %d-second automatic rollback guard", rollbackDelaySeconds))
 
 	if err := r.startTemporarySSHD(); err != nil {
@@ -327,11 +332,13 @@ func (r *runner) prepareNetwork() error {
 		r.firewall = "firewalld"
 		query := fmt.Sprintf("firewall-cmd --quiet --query-port=%d/tcp", r.newPort)
 		if _, err := r.exec(query); err != nil {
-			cmd := fmt.Sprintf("firewall-cmd --quiet --add-port=%d/tcp && firewall-cmd --quiet --permanent --add-port=%d/tcp", r.newPort, r.newPort)
-			if _, err := r.exec(cmd); err != nil {
+			if _, err := r.exec(fmt.Sprintf("firewall-cmd --quiet --add-port=%d/tcp", r.newPort)); err != nil {
 				return fmt.Errorf("cannot open new port in firewalld: %w", err)
 			}
 			r.firewallAdd = true
+			if _, err := r.exec(fmt.Sprintf("firewall-cmd --quiet --permanent --add-port=%d/tcp", r.newPort)); err != nil {
+				return fmt.Errorf("cannot persist new firewalld port: %w", err)
+			}
 			r.step("Opened the new port in firewalld")
 		}
 		return nil
@@ -340,17 +347,20 @@ func (r *runner) prepareNetwork() error {
 	ufw, _ := r.exec("ufw status 2>/dev/null | head -n1 || true")
 	if strings.Contains(strings.ToLower(ufw), "active") {
 		r.firewall = "ufw"
-		cmd := fmt.Sprintf("ufw allow %d/tcp >/dev/null", r.newPort)
-		if _, err := r.exec(cmd); err != nil {
-			return fmt.Errorf("cannot open new port in ufw: %w", err)
+		exists := fmt.Sprintf("ufw status | grep -Eq '(^|[[:space:]])%d/tcp([[:space:]]|$)'", r.newPort)
+		if _, err := r.exec(exists); err != nil {
+			cmd := fmt.Sprintf("ufw allow %d/tcp >/dev/null", r.newPort)
+			if _, err := r.exec(cmd); err != nil {
+				return fmt.Errorf("cannot open new port in ufw: %w", err)
+			}
+			r.firewallAdd = true
+			r.step("Opened the new port in UFW")
 		}
-		r.firewallAdd = true
-		r.step("Opened the new port in UFW")
 	}
 	return nil
 }
 
-func (r *runner) backupAndArmRollback() error {
+func (r *runner) backupSSH() error {
 	token := make([]byte, 8)
 	if _, err := io.ReadFull(cryptorand.Reader, token); err != nil {
 		return err
@@ -362,11 +372,14 @@ func (r *runner) backupAndArmRollback() error {
 	if _, err := r.exec("install -d -m 700 /var/lib/root2key " + shellQuote(r.backupDir) + "; cp -a /etc/ssh " + shellQuote(r.backupDir+"/ssh")); err != nil {
 		return fmt.Errorf("backup SSH configuration: %w", err)
 	}
+	return nil
+}
 
+func (r *runner) armRollback() error {
 	var rollback strings.Builder
 	rollback.WriteString("#!/bin/sh\nset +e\n")
 	rollback.WriteString("rm -rf /etc/ssh && cp -a " + shellQuote(r.backupDir+"/ssh") + " /etc/ssh\n")
-	rollback.WriteString("grep -vxF -- " + shellQuote(strings.TrimSpace(r.publicKey)) + " /root/.ssh/authorized_keys > /root/.ssh/authorized_keys.root2key.tmp 2>/dev/null && mv /root/.ssh/authorized_keys.root2key.tmp /root/.ssh/authorized_keys\n")
+	rollback.WriteString("if [ -f /root/.ssh/authorized_keys ]; then (grep -vxF -- " + shellQuote(strings.TrimSpace(r.publicKey)) + " /root/.ssh/authorized_keys 2>/dev/null || true) > /root/.ssh/authorized_keys.root2key.tmp; mv /root/.ssh/authorized_keys.root2key.tmp /root/.ssh/authorized_keys; fi\n")
 	rollback.WriteString("chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true\n")
 	if r.firewallAdd && r.firewall == "firewalld" {
 		rollback.WriteString(fmt.Sprintf("firewall-cmd --quiet --remove-port=%d/tcp >/dev/null 2>&1 || true\n", r.newPort))
@@ -415,7 +428,8 @@ func (r *runner) stopTemporarySSHD() error {
 	if r.tempPID == "" {
 		return nil
 	}
-	_, err := r.exec("kill " + shellQuote(r.tempPID) + " 2>/dev/null || true")
+	pid := r.tempPID
+	_, err := r.exec("kill " + shellQuote(pid) + " 2>/dev/null || true; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 " + shellQuote(pid) + " 2>/dev/null || break; sleep 0.1; done")
 	r.tempPID = ""
 	return err
 }
@@ -498,10 +512,27 @@ func (r *runner) verifyPasswordRejected(ctx context.Context) error {
 
 func (r *runner) rollback() error {
 	r.stopTemporarySSHD()
-	if r.guardScript == "" {
-		return nil
+	if r.guardScript != "" && r.guardPID != "" {
+		_, err := r.exec("kill " + shellQuote(r.guardPID) + " 2>/dev/null || true; sh " + shellQuote(r.guardScript))
+		return err
 	}
-	_, err := r.exec("kill " + shellQuote(r.guardPID) + " 2>/dev/null || true; sh " + shellQuote(r.guardScript))
+	if r.backupDir != "" {
+		if _, err := r.exec("rm -rf /etc/ssh && cp -a " + shellQuote(r.backupDir+"/ssh") + " /etc/ssh"); err != nil {
+			return err
+		}
+	}
+	if r.publicKey != "" {
+		_, _ = r.exec("if [ -f /root/.ssh/authorized_keys ]; then (grep -vxF -- " + shellQuote(strings.TrimSpace(r.publicKey)) + " /root/.ssh/authorized_keys 2>/dev/null || true) > /root/.ssh/authorized_keys.root2key.tmp; mv /root/.ssh/authorized_keys.root2key.tmp /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; fi")
+	}
+	if r.firewallAdd && r.firewall == "firewalld" {
+		_, _ = r.exec(fmt.Sprintf("firewall-cmd --quiet --remove-port=%d/tcp >/dev/null 2>&1 || true; firewall-cmd --quiet --permanent --remove-port=%d/tcp >/dev/null 2>&1 || true", r.newPort, r.newPort))
+	} else if r.firewallAdd && r.firewall == "ufw" {
+		_, _ = r.exec(fmt.Sprintf("ufw --force delete allow %d/tcp >/dev/null 2>&1 || true", r.newPort))
+	}
+	if r.selinuxAdd {
+		_, _ = r.exec(fmt.Sprintf("semanage port -d -t ssh_port_t -p tcp %d >/dev/null 2>&1 || true", r.newPort))
+	}
+	_, err := r.exec(reloadCommand())
 	return err
 }
 
