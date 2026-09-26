@@ -476,7 +476,7 @@ impl Runner {
             "{ports}PasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nPubkeyAuthentication yes\nPermitRootLogin prohibit-password\nAuthenticationMethods publickey\n"
         );
         let script = format!(
-            r#"set -eu
+            r##"set -eu
 patch_global() {{
   f="$1"
   [ -f "$f" ] || return 0
@@ -511,7 +511,7 @@ cat > /etc/ssh/root2key.conf <<'ROOT2KEY_MANAGED'
 {managed}ROOT2KEY_MANAGED
 {} -t -f /etc/ssh/sshd_config
 {}
-"#,
+"##,
             shell_quote(&self.sshd),
             reload_command()
         );
