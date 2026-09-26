@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>root2key</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color-scheme:dark;background:#0b0d10;color:#eef2f7}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}
+    main{width:min(760px,100%);background:#12161c;border:1px solid #28303b;border-radius:18px;padding:28px;box-shadow:0 18px 60px #0007}
+    h1{margin:0 0 8px;font-size:30px}p{color:#9eabb9;line-height:1.55}.grid{display:grid;grid-template-columns:1fr 150px;gap:14px}
+    label{display:block;margin:14px 0 6px;color:#c9d3dd;font-size:14px}input,button,textarea{width:100%;border-radius:10px;border:1px solid #303947;background:#0c1015;color:#eef2f7;padding:12px 13px;font:inherit}
+    input:focus,textarea:focus{outline:2px solid #5c93ff;border-color:transparent}button{margin-top:20px;background:#ecf2ff;color:#111827;font-weight:750;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+    .warn{border-left:3px solid #e3a63a;padding-left:12px}.ok{color:#73d39b}.err{color:#ff8585}.hidden{display:none}pre{white-space:pre-wrap;word-break:break-word;background:#090c10;padding:14px;border-radius:10px;border:1px solid #27303b}
+    .actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.actions button{margin-top:0;background:#1b2430;color:#eef2f7}.steps{margin:12px 0;padding-left:22px;color:#b9c4cf}.small{font-size:13px}
+    @media(max-width:620px){.grid,.actions{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>root2key</h1>
+  <p>Convert a fresh Ubuntu/CentOS-family VPS from root-password SSH to a freshly generated Ed25519 key and a random high SSH port.</p>
+  <p class="warn small">Keep your provider console available during development. The service is published to localhost only by the supplied Compose file.</p>
+  <form id="form" autocomplete="off">
+    <div class="grid">
+      <div><label for="host">Public IP / hostname</label><input id="host" name="host" required spellcheck="false" autocomplete="off" placeholder="203.0.113.10"></div>
+      <div><label for="port">Current SSH port</label><input id="port" name="port" required type="number" min="1" max="65535" value="22"></div>
+    </div>
+    <label for="password">Root password</label><input id="password" name="password" required type="password" autocomplete="new-password">
+    <button id="submit" type="submit">Bootstrap host</button>
+  </form>
+  <section id="status" class="hidden"><h2 id="statusTitle"></h2><ol id="steps" class="steps"></ol><pre id="error" class="err hidden"></pre></section>
+  <section id="result" class="hidden">
+    <h2 class="ok">Bootstrap complete</h2>
+    <pre id="summary"></pre>
+    <div class="actions"><button type="button" id="privateBtn">Download private key</button><button type="button" id="publicBtn">Download public key</button><button type="button" id="configBtn">Download SSH config</button></div>
+    <p class="warn small">The private key exists only in this response/browser page. Save it now. Refreshing loses it.</p>
+  </section>
+</main>
+<script>
+const form=document.getElementById('form'), submit=document.getElementById('submit'), statusBox=document.getElementById('status'), resultBox=document.getElementById('result'), steps=document.getElementById('steps'), errBox=document.getElementById('error');
+let last=null;
+function renderSteps(items=[]){steps.innerHTML=''; for(const s of items){const li=document.createElement('li');li.textContent=s;steps.appendChild(li)}}
+function download(name,text){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/plain'}));a.download=name;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove()}
+form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;statusBox.classList.remove('hidden');resultBox.classList.add('hidden');errBox.classList.add('hidden');renderSteps([]);document.getElementById('statusTitle').textContent='Working… do not close this page';
+ const payload={host:document.getElementById('host').value.trim(),port:Number(document.getElementById('port').value),password:document.getElementById('password').value};
+ try{const r=await fetch('/api/bootstrap',{method:'POST',headers:{'content-type':'application/json'},cache:'no-store',body:JSON.stringify(payload)});document.getElementById('password').value='';const data=await r.json();renderSteps(data.steps||[]);if(!r.ok)throw new Error(data.error||'bootstrap failed');last=data;document.getElementById('statusTitle').textContent='Transaction log';document.getElementById('summary').textContent=`Host: ${data.host}\nUser: ${data.user}\nSSH port: ${data.port}\nOS: ${data.os}\nHost key: ${data.host_key_fingerprint}\n\nssh -i ~/.ssh/root2key_${data.host.replace(/[^a-zA-Z0-9_.-]/g,'_')} -p ${data.port} root@${data.host}`;resultBox.classList.remove('hidden')}
+ catch(err){errBox.textContent=err.message;errBox.classList.remove('hidden');document.getElementById('statusTitle').textContent='Bootstrap failed'}finally{payload.password='';submit.disabled=false}});
+document.getElementById('privateBtn').onclick=()=>last&&download(`root2key_${last.host.replace(/[^a-zA-Z0-9_.-]/g,'_')}`,last.private_key);
+document.getElementById('publicBtn').onclick=()=>last&&download(`root2key_${last.host.replace(/[^a-zA-Z0-9_.-]/g,'_')}.pub`,last.public_key+'\n');
+document.getElementById('configBtn').onclick=()=>last&&download(`ssh_config_${last.host.replace(/[^a-zA-Z0-9_.-]/g,'_')}`,last.ssh_config);
+</script>
+</body>
+</html>
