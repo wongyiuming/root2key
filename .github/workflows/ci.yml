@@ -7,7 +7,7 @@ on:
     branches: [go-main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -18,17 +18,10 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: false
-      - name: Generate dependency lock
-        shell: bash
+      - name: Verify module files
         run: |
           go mod tidy
-          if ! git diff --quiet -- go.mod go.sum; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add go.mod go.sum
-            git commit -m "build(go): lock module dependencies"
-            git push origin HEAD:go-dev
-          fi
+          git diff --exit-code -- go.mod go.sum
       - name: Test
         run: go test ./...
       - name: Build container
