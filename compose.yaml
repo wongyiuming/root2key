@@ -1,0 +1,15 @@
+services:
+  root2key:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ROOT2KEY_PORT:-8080}:8080"
+    environment:
+      ROOT2KEY_LISTEN: "0.0.0.0:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
