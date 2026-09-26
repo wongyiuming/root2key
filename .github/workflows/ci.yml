@@ -1,0 +1,21 @@
+name: go-dev-ci
+
+on:
+  push:
+    branches: [go-dev]
+  pull_request:
+    branches: [go-main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+      - name: Test
+        run: go test ./...
+      - name: Build container
+        run: docker build -t root2key:go-dev .
