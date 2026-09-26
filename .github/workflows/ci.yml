@@ -1,0 +1,20 @@
+name: rust-dev-ci
+
+on:
+  push:
+    branches: [rust-dev]
+  pull_request:
+    branches: [rust-main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libssh2-1-dev
+      - name: Check
+        run: cargo check
+      - name: Build container
+        run: docker build -t root2key:rust-dev .
